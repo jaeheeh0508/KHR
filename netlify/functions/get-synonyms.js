@@ -1,7 +1,7 @@
 const https = require("https");
 
-const SUPABASE_URL = "https://rfyovtepspyseidktiea.supabase.co";
-const SUPABASE_KEY = "sb_publishable_UU8vDCtULeR9XBb-wDgP0g_Ef7eDncE";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 // get-specimens.js와 동일한 이유로 두 가지를 반영합니다.
 // 1) PostgREST는 한 번의 요청에서 최대 1000건까지만 반환하므로(쿼리의 limit과 무관),

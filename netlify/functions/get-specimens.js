@@ -1,7 +1,7 @@
 const https = require("https");
 
-const SUPABASE_URL = "https://rfyovtepspyseidktiea.supabase.co";
-const SUPABASE_KEY = "sb_publishable_UU8vDCtULeR9XBb-wDgP0g_Ef7eDncE";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 // Supabase(PostgREST)는 한 번의 요청에서 반환하는 행 수를 기본 1000건으로 제한합니다.
 // (쿼리의 limit 값과 무관하게 서버(db-max-rows) 설정에 의해 강제됨)

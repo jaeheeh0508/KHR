@@ -17,8 +17,8 @@
 const { schedule } = require("@netlify/functions");
 const https = require("https");
 
-const SUPABASE_URL = "https://rfyovtepspyseidktiea.supabase.co";
-const SUPABASE_KEY = "sb_publishable_UU8vDCtULeR9XBb-wDgP0g_Ef7eDncE";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 function ping(table) {
   return new Promise((resolve, reject) => {
