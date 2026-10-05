@@ -11892,11 +11892,16 @@ function HomePage({
 }) {
   const t = useT();
   const isMobile = useIsMobile();
-  const [center, setCenter] = useState("jeju"); // jeju | okcheon — 두 센터 데이터는 합치지 않고 탭으로 나눠서 보여준다
+  const [center, setCenter] = useState("jeju"); // all | jeju | okcheon — 제주/옥천은 각각 따로, "전체"는 두 센터를 합산해서 보여준다
   const { data: okcheonSpecimens, loading: okcheonLoading } = useOkcheonSpecimens();
   const okcheonStats = useMemo(
     () => computeStatsFromSpecimens(okcheonSpecimens || [], window.__PHARMA__, synonyms || []),
     [okcheonSpecimens, synonyms]
+  );
+  // "전체" 탭: 제주센터 표본(window.__SPEC__)과 옥천센터 표본을 합쳐서 다시 집계한다.
+  const combinedStats = useMemo(
+    () => computeStatsFromSpecimens([...(window.__SPEC__ || []), ...(okcheonSpecimens || [])], window.__PHARMA__, synonyms || []),
+    [okcheonSpecimens, synonyms, (window.__SPEC__ || []).length]
   );
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -11932,7 +11937,7 @@ function HomePage({
   }, t("국립생약자원관 수장·관리 생약자원 표본 및 공정서 등재 현황 — 센터별로 나누어 확인할 수 있습니다.", "Herbal resource specimens and pharmacopoeia registration status managed by the National Institute of Korea Herbal Resources — view by center."))),
   /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", gap: 8, marginBottom: isMobile ? 14 : 18 }
-  }, [{ id: "jeju", label: t("🌱 제주센터", "🌱 Jeju Center") }, { id: "okcheon", label: t("🌿 옥천센터", "🌿 Okcheon Center") }].map(c => /*#__PURE__*/React.createElement("button", {
+  }, [{ id: "jeju", label: t("🌱 제주센터", "🌱 Jeju Center") }, { id: "okcheon", label: t("🌿 옥천센터", "🌿 Okcheon Center") }, { id: "all", label: t("🏛 전체", "🏛 All Centers") }].map(c => /*#__PURE__*/React.createElement("button", {
     key: c.id,
     onClick: () => setCenter(c.id),
     style: {
@@ -11947,6 +11952,15 @@ function HomePage({
       fontWeight: 700
     }
   }, c.label))),
+  center === "all" && /*#__PURE__*/React.createElement(CenterOverview, {
+    stats: combinedStats,
+    hasStorage: false,
+    centerLabel: t("전체(제주+옥천)", "All Centers (Jeju + Okcheon)"),
+    navPrefix: "jeju-center",
+    onNav: onNav,
+    loading: specimensLoading || okcheonLoading,
+    progress: specimensProgress
+  }),
   center === "jeju" && /*#__PURE__*/React.createElement(CenterOverview, {
     stats: window.__STATS__,
     hasStorage: true,
@@ -14007,9 +14021,30 @@ function SynonymsPage({
 }) {
   const t = useT();
   const isMobile = useIsMobile();
+  const isAdmin = isAdminLoggedIn();
   const [uploadState, setUploadState] = useState("idle"); // idle | parsing | syncing | done | error
   const [uploadResult, setUploadResult] = useState(null);
   const fileInputRef = useRef(null);
+  const [deletingFrom, setDeletingFrom] = useState(null); // 삭제 진행 중인 표본국명 (버튼별 로딩 표시용)
+
+  const handleDelete = async (from) => {
+    if (!confirm(t(`"${from}" 이명을 정말 삭제할까요? 이 작업은 되돌릴 수 없습니다.`, `Are you sure you want to delete the synonym "${from}"? This cannot be undone.`))) return;
+    setDeletingFrom(from);
+    try {
+      const res = await fetch("/.netlify/functions/delete-synonym", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: ADMIN_PASSWORD, "표본국명": from }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || t("삭제 실패", "Delete failed"));
+      await reloadSynonyms();
+    } catch (e) {
+      alert(t("삭제 실패: ", "Delete failed: ") + e.message);
+    } finally {
+      setDeletingFrom(null);
+    }
+  };
 
   const downloadTemplate = () => {
     const rows = [["표본국명", "공정서국명"], ["예) 참당귀", "당귀"]];
@@ -14148,7 +14183,14 @@ function SynonymsPage({
     key: i
   },
     /*#__PURE__*/React.createElement("td", { style: { padding: "7px 12px", borderBottom: "1px solid #f0f2f0" } }, s[0]),
-    /*#__PURE__*/React.createElement("td", { style: { padding: "7px 12px", borderBottom: "1px solid #f0f2f0" } }, s[1])
+    /*#__PURE__*/React.createElement("td", { style: { padding: "7px 12px", borderBottom: "1px solid #f0f2f0" } }, s[1]),
+    isAdmin && /*#__PURE__*/React.createElement("td", { style: { padding: "7px 12px", borderBottom: "1px solid #f0f2f0", textAlign: "right" } },
+      /*#__PURE__*/React.createElement("button", {
+        onClick: () => handleDelete(s[0]),
+        disabled: deletingFrom === s[0],
+        style: { padding: "3px 10px", borderRadius: 6, border: "1px solid #c0392b", background: "#fdeeec", color: "#c0392b", cursor: deletingFrom === s[0] ? "default" : "pointer", fontSize: 11.5, fontWeight: 600 }
+      }, deletingFrom === s[0] ? t("삭제 중...", "Deleting...") : t("🗑 삭제", "🗑 Delete"))
+    )
   ));
 
   const listTable = (!synonyms || synonyms.length === 0) ? /*#__PURE__*/React.createElement("p", {
@@ -14162,7 +14204,8 @@ function SynonymsPage({
       style: { background: "#f6f9f7", position: "sticky", top: 0 }
     },
       /*#__PURE__*/React.createElement("th", { style: { textAlign: "left", padding: "8px 12px", borderBottom: "1px solid #e0e6e3" } }, t("표본국명", "Specimen Name")),
-      /*#__PURE__*/React.createElement("th", { style: { textAlign: "left", padding: "8px 12px", borderBottom: "1px solid #e0e6e3" } }, t("공정서국명", "Pharmacopoeia Name"))
+      /*#__PURE__*/React.createElement("th", { style: { textAlign: "left", padding: "8px 12px", borderBottom: "1px solid #e0e6e3" } }, t("공정서국명", "Pharmacopoeia Name")),
+      isAdmin && /*#__PURE__*/React.createElement("th", { style: { textAlign: "right", padding: "8px 12px", borderBottom: "1px solid #e0e6e3" } }, t("관리", "Manage"))
     )),
     /*#__PURE__*/React.createElement("tbody", null, listRows)
   ));
@@ -14586,9 +14629,9 @@ function StatsPage({ navParams, synonyms, onNav }) {
   const t = useT();
   const isMobile = useIsMobile();
   const [subTab, setSubTab] = useState(navParams?.subTab || "pharma"); // pharma | specimen
-  const [center, setCenter] = useState("jeju"); // jeju | okcheon — 두 센터 통계는 합치지 않고 따로 보여준다
+  const [center, setCenter] = useState("jeju"); // all | jeju | okcheon — 제주/옥천은 각각, "전체"는 두 센터를 합산해서 보여준다
   // 통계 카드/범례를 클릭하면 현재 선택된 센터(제주/옥천)의 표본·식물종 페이지로 이동한다.
-  const navPrefix = center === "jeju" ? "jeju-center" : "okcheon-center";
+  const navPrefix = center === "okcheon" ? "okcheon-center" : "jeju-center";
 
   useEffect(() => {
     if (navParams?.subTab) setSubTab(navParams.subTab);
@@ -14599,9 +14642,13 @@ function StatsPage({ navParams, synonyms, onNav }) {
     () => computeStatsFromSpecimens(okcheonSpecimens || [], window.__PHARMA__, synonyms || []),
     [okcheonSpecimens, synonyms]
   );
+  const combinedStats = useMemo(
+    () => computeStatsFromSpecimens([...(window.__SPEC__ || []), ...(okcheonSpecimens || [])], window.__PHARMA__, synonyms || []),
+    [okcheonSpecimens, synonyms, (window.__SPEC__ || []).length]
+  );
 
-  const activeStats = center === "jeju" ? window.__STATS__ : okcheonStats;
-  const activeCenterLabel = center === "jeju" ? t("제주센터", "Jeju Center") : t("옥천센터", "Okcheon Center");
+  const activeStats = center === "jeju" ? window.__STATS__ : center === "okcheon" ? okcheonStats : combinedStats;
+  const activeCenterLabel = center === "jeju" ? t("제주센터", "Jeju Center") : center === "okcheon" ? t("옥천센터", "Okcheon Center") : t("전체(제주+옥천)", "All Centers (Jeju + Okcheon)");
   const activeHasStorage = center === "jeju";
 
   return /*#__PURE__*/React.createElement("div", null,
@@ -14624,7 +14671,7 @@ function StatsPage({ navParams, synonyms, onNav }) {
         }, tb.label))
       ),
       React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-        [{ id: "jeju", label: t("🌱 제주센터", "🌱 Jeju Center") }, { id: "okcheon", label: t("🌿 옥천센터", "🌿 Okcheon Center") }].map(c => React.createElement("button", {
+        [{ id: "jeju", label: t("🌱 제주센터", "🌱 Jeju Center") }, { id: "okcheon", label: t("🌿 옥천센터", "🌿 Okcheon Center") }, { id: "all", label: t("🏛 전체", "🏛 All Centers") }].map(c => React.createElement("button", {
           key: c.id,
           onClick: () => setCenter(c.id),
           style: {
@@ -14641,7 +14688,7 @@ function StatsPage({ navParams, synonyms, onNav }) {
         }, c.label))
       )
     ),
-    center === "okcheon" && okcheonLoading && React.createElement("div", {
+    (center === "okcheon" || center === "all") && okcheonLoading && React.createElement("div", {
       style: { marginBottom: 14, fontSize: 12.5, color: "#1a6b3e", fontWeight: 600 }
     }, t("⏳ 옥천센터 표본 데이터 불러오는 중...", "⏳ Loading Okcheon Center specimen data...")),
     subTab === "pharma" && React.createElement(PharmaStatsPage, { stats: activeStats, centerLabel: activeCenterLabel, onNav }),
