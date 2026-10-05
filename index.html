@@ -8427,6 +8427,17 @@ const GRADE_LABELS = {
   "B2-4": "기타 민간요법 다용 품목"
 };
 
+// 위 GRADE_LABELS의 영문 번역. "중요도별 표본 현황" 통계에서 언어 전환 시 함께 번역하기 위해 사용한다.
+const GRADE_LABELS_EN = {
+  "A1": "Herbal resources listed in the pharmacopoeia",
+  "A2": "Herbal resources distributed domestically, where a congeneric (allied) species is included as an origin species in the pharmacopoeia",
+  "B1": "Herbal resources distributed domestically among plants belonging to a genus mentioned in the pharmacopoeia",
+  "B2-1": "Domestic native plants listed in a foreign pharmacopoeia",
+  "B2-2": "Items recognized as functional ingredients for health functional foods",
+  "B2-3": "Items recorded in traditional medical texts such as the Donguibogam",
+  "B2-4": "Other items widely used in folk remedies"
+};
+
 function pctOf(n, total) {
   return total > 0 ? Math.round((n / total) * 1000) / 10 : 0;
 }
@@ -8568,7 +8579,7 @@ function computeStatsFromSpecimens(specimens, pharmaData, synonyms) {
       if (!grade) return;
       counts.set(grade, (counts.get(grade) || 0) + 1);
     });
-    return Array.from(counts.entries()).map(([grade, count]) => ({ grade, label: GRADE_LABELS[grade] || grade, count })).sort((a, b) => b.count - a.count);
+    return Array.from(counts.entries()).map(([grade, count]) => ({ grade, label: GRADE_LABELS[grade] || grade, labelEn: GRADE_LABELS_EN[grade] || GRADE_LABELS[grade] || grade, count })).sort((a, b) => b.count - a.count);
   }
 
   const storage1Rows = specimens.filter(r => (r[2] || "").includes("1수장고"));
@@ -12563,7 +12574,7 @@ function SpecimenStatsPage({ stats, hasStorage, centerLabel, onNav, navPrefix })
                 /*#__PURE__*/React.createElement("span", {
                   style: { display: "inline-block", width: 30, background: impColorsAll[i], color: "#fff", borderRadius: 4, fontSize: 10, fontWeight: 700, textAlign: "center", padding: "1px 0" }
                 }, imp.grade),
-                /*#__PURE__*/React.createElement("span", { style: { color: "#4a5568", fontSize: 11 } }, imp.label)
+                /*#__PURE__*/React.createElement("span", { style: { color: "#4a5568", fontSize: 11 } }, t(imp.label, imp.labelEn))
               ),
               /*#__PURE__*/React.createElement("span", { style: { color: "#7f8c8d", fontSize: 11 } }, fmt(imp.count), " (", pct(imp.count, s.specimens.total), ")")
             ),
@@ -12651,7 +12662,7 @@ function SpecimenStatsPage({ stats, hasStorage, centerLabel, onNav, navPrefix })
                   /*#__PURE__*/React.createElement("span", {
                     style: { display: "inline-block", width: 30, background: impColors[i], color: "#fff", borderRadius: 4, fontSize: 10, fontWeight: 700, textAlign: "center", padding: "1px 0" }
                   }, imp.grade),
-                  /*#__PURE__*/React.createElement("span", { style: { color: "#4a5568", fontSize: 11 } }, imp.label)
+                  /*#__PURE__*/React.createElement("span", { style: { color: "#4a5568", fontSize: 11 } }, t(imp.label, imp.labelEn))
                 ),
                 /*#__PURE__*/React.createElement("span", { style: { color: "#7f8c8d", fontSize: 11 } }, fmt(imp.count), " (", pct(imp.count, data.total), ")")
               ),
