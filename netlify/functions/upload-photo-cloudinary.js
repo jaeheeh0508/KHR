@@ -55,14 +55,21 @@ exports.handler = async function(event) {
     }
 
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.[^.]+$/, ""); // Cloudinary가 확장자를 자동으로 붙이므로 제거
-    const publicId = `specimens/${id}/${Date.now()}-${safeName}`;
+
+    // 중복 업로드 방지: 파일 "내용"의 SHA-1 해시(앞 12자리)를 public_id에 넣는다.
+    // 같은 표본(id) 폴더에 같은 내용의 사진을 다시 올리면 public_id가 똑같아지고,
+    // overwrite=false 이므로 Cloudinary가 새로 만들지 않고 기존 사진 정보를 그대로 돌려준다(existing: true).
+    // → 파일 이름이 바뀌어도 내용이 같으면 중복으로 인식하고, 이름만 같고 내용이 다르면 별개 사진으로 취급한다.
+    const contentHash = crypto.createHash("sha1").update(Buffer.from(fileBase64, "base64")).digest("hex").slice(0, 12);
+    const publicId = `specimens/${id}/${contentHash}-${safeName}`;
     const timestamp = Math.floor(Date.now() / 1000);
 
-    const signature = cloudinarySignature({ public_id: publicId, timestamp }, API_SECRET);
+    const signature = cloudinarySignature({ public_id: publicId, timestamp, overwrite: "false" }, API_SECRET);
 
     const form = new URLSearchParams();
     form.append("file", `data:${contentType || "application/octet-stream"};base64,${fileBase64}`);
     form.append("public_id", publicId);
+    form.append("overwrite", "false");
     form.append("timestamp", String(timestamp));
     form.append("api_key", API_KEY);
     form.append("signature", signature);
@@ -83,6 +90,7 @@ exports.handler = async function(event) {
       headers: { ...CORS, "Content-Type": "application/json" },
       body: JSON.stringify({
         ok: true,
+        duplicate: json.existing === true, // true면 이미 같은 사진이 있어서 새로 올리지 않고 건너뛴 것
         name: json.public_id.split("/").pop(),
         key: json.public_id,
         url: json.secure_url,

@@ -163,21 +163,30 @@ function useSpecimenPhotos(id) {
   const upload = async (files, onProgress) => {
     const arr = Array.from(files || []);
     const failed = [];
+    let duplicates = 0; // 이미 올라가 있어서 건너뛴 사진 수
     for (let i = 0; i < arr.length; i++) {
       const file = arr[i];
       if (onProgress) onProgress(i + 1, arr.length, file.name);
       try {
-        const fileBase64 = await fileToBase64(file);
+        // 큰 사진은 서버 요청 한도(약 6MB)를 넘지 않도록 먼저 압축한다 (대량 업로드와 같은 기준).
+        let sendFile = file;
+        let contentType = file.type;
+        if (file.size > BULK_UPLOAD_MAX_BYTES) {
+          sendFile = await compressImageFile(file, BULK_UPLOAD_MAX_BYTES);
+          contentType = "image/jpeg";
+        }
+        const fileBase64 = await fileToBase64(sendFile);
         const res = await fetch("/.netlify/functions/upload-photo-cloudinary", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey: ADMIN_PASSWORD, id, fileName: file.name, contentType: file.type, fileBase64 }),
+          body: JSON.stringify({ apiKey: ADMIN_PASSWORD, id, fileName: file.name, contentType, fileBase64 }),
         });
-        const json = await res.json();
+        const json = await readUploadResponse(res);
         if (!json.ok) throw new Error(json.error || "업로드 실패");
+        if (json.duplicate) duplicates++;
       } catch (e) {
         // 한 장이 실패해도 나머지 파일 업로드는 계속 진행한다
-        failed.push({ name: file.name, error: e.message });
+        failed.push({ name: file.name, error: e.message, file });
       }
     }
     await load();
@@ -188,8 +197,10 @@ function useSpecimenPhotos(id) {
           : `${arr.length}장 중 ${failed.length}장 업로드 실패: ${failed.map(f => f.name).join(", ")}`
       );
       err.failed = failed;
+      err.duplicates = duplicates;
       throw err;
     }
+    return { duplicates };
   };
 
   // key: Cloudinary의 public_id (list에서 받아온 photo.key)
@@ -217,6 +228,8 @@ function SpecimenPhotoGallery({ id, editable }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // { current, total, name }
   const [uploadErr, setUploadErr] = useState(null);
+  const [uploadNotice, setUploadNotice] = useState(null); // 중복 건너뜀 등 참고용 안내(오류 아님)
+  const [failedFiles, setFailedFiles] = useState([]); // 업로드에 실패한 파일들 (다시 시도용)
   const [lightbox, setLightbox] = useState(null);
   const [activeIdx, setActiveIdx] = useState(0); // 현재 큰 미리보기로 보여줄 사진의 인덱스
   const fileRef = useRef(null);
@@ -231,11 +244,20 @@ function SpecimenPhotoGallery({ id, editable }) {
     if (!files || files.length === 0) return;
     setUploading(true);
     setUploadErr(null);
+    setUploadNotice(null);
+    setFailedFiles([]);
     setUploadProgress({ current: 0, total: files.length, name: "" });
     try {
-      await upload(files, (current, total, name) => setUploadProgress({ current, total, name }));
+      const result = await upload(files, (current, total, name) => setUploadProgress({ current, total, name }));
+      if (result && result.duplicates > 0) {
+        setUploadNotice(t(`이미 등록된 사진 ${result.duplicates}장은 중복이라 건너뛰었습니다.`, `${result.duplicates} photo(s) were already uploaded and were skipped.`));
+      }
     } catch (e) {
       setUploadErr(e.message);
+      if (e.failed) setFailedFiles(e.failed.map(f => f.file).filter(Boolean));
+      if (e.duplicates > 0) {
+        setUploadNotice(t(`이미 등록된 사진 ${e.duplicates}장은 중복이라 건너뛰었습니다.`, `${e.duplicates} photo(s) were already uploaded and were skipped.`));
+      }
     } finally {
       setUploading(false);
       setUploadProgress(null);
@@ -271,7 +293,13 @@ function SpecimenPhotoGallery({ id, editable }) {
       onChange: e => { handleFiles(e.target.files); e.target.value = ""; }
     }),
     uploading && uploadProgress && uploadProgress.name && React.createElement("div", { style: { fontSize: 11, color: "#1a6b3e", marginBottom: 8 } }, t(`업로드 중: ${uploadProgress.name}`, `Uploading: ${uploadProgress.name}`)),
-    uploadErr && React.createElement("div", { style: { fontSize: 11.5, color: "#c0392b", marginBottom: 8 } }, "⚠ " + uploadErr),
+    uploadErr && React.createElement("div", { style: { fontSize: 11.5, color: "#c0392b", marginBottom: 8 } }, "⚠ " + uploadErr,
+      editable && failedFiles.length > 0 && !uploading && React.createElement("button", {
+        onClick: () => handleFiles(failedFiles),
+        style: { marginLeft: 8, padding: "2px 8px", borderRadius: 5, border: "1px solid #c0392b", background: "#fdeeec", color: "#c0392b", cursor: "pointer", fontSize: 11, fontWeight: 600 }
+      }, t(`🔄 실패한 ${failedFiles.length}장만 다시 올리기`, `🔄 Retry ${failedFiles.length} failed`))
+    ),
+    uploadNotice && React.createElement("div", { style: { fontSize: 11.5, color: "#7f8c8d", marginBottom: 8 } }, "ℹ " + uploadNotice),
     loading && React.createElement("div", { style: { fontSize: 12, color: "#95a5a6", padding: "10px 0" } }, t("사진 불러오는 중...", "Loading photos...")),
     error && React.createElement("div", { style: { fontSize: 12, color: "#c0392b", padding: "10px 0" } }, t("사진 목록을 불러오지 못했습니다: ", "Failed to load photo list: ") + error),
     !loading && !error && photos.length === 0 && React.createElement("div", {
@@ -9913,8 +9941,10 @@ const SPEC_KEYS = ["id", "specNo", "storage", "location", "drugName", "korName",
 // 표본 하나가 아니라 여러 표본의 사진을 한꺼번에 올릴 때 쓴다.
 // 파일명이 관리번호로 시작하면(예: "KHR23319686V.jpg", "KHR23319686V-2.jpg") 자동으로
 // 어느 표본 사진인지 찾아서, 그 표본의 Cloudinary 폴더에 업로드한다.
-// 10MB가 넘는 사진은 브라우저에서 자동으로 압축한 뒤 올린다(Cloudinary 무료 플랜 10MB 제한 대응).
-const BULK_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+// 3.5MB가 넘는 사진은 브라우저에서 자동으로 압축한 뒤 올린다.
+// 이유: 사진을 base64로 바꿔 Netlify 함수로 보내는데, 함수 요청 한도가 약 6MB이고 base64는 용량이 약 33% 늘어난다.
+// 그래서 원본이 약 4.5MB만 넘어도 서버가 413(Payload Too Large)로 거부한다. 여유를 두고 3.5MB를 기준으로 삼는다.
+const BULK_UPLOAD_MAX_BYTES = 3.5 * 1024 * 1024;
 
 // 관리번호 목록 중 파일명과 가장 길게 일치하는 것을 찾는다 (예: "KHR1234"가 "KHR123"보다 먼저 매칭).
 function matchSpecimenId(fileName, sortedIds) {
@@ -9924,7 +9954,20 @@ function matchSpecimenId(fileName, sortedIds) {
   return null;
 }
 
-// 이미지 파일을 캔버스로 리사이즈/재압축해서 Blob으로 돌려준다 (10MB 넘는 사진에만 사용).
+// 업로드 함수의 응답을 안전하게 읽는다.
+// 서버가 용량 초과(413) 등으로 JSON이 아닌 빈 응답을 보내면 res.json()이
+// "Unexpected end of JSON input"이라는 알아보기 힘든 오류를 내므로, 원인을 알 수 있는 문구로 바꿔 준다.
+async function readUploadResponse(res) {
+  if (res.status === 413) throw new Error("사진 용량이 너무 커서 서버가 받지 못했습니다(413)");
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    throw new Error(`서버 응답을 읽지 못했습니다 (상태 코드 ${res.status})`);
+  }
+}
+
+// 이미지 파일을 캔버스로 리사이즈/재압축해서 Blob으로 돌려준다 (BULK_UPLOAD_MAX_BYTES 넘는 사진에만 사용).
 function compressImageFile(file, maxBytes) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -9939,18 +9982,28 @@ function compressImageFile(file, maxBytes) {
           height = Math.round(height * scale);
         }
         const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
+        const draw = (w, h) => {
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        };
+        draw(width, height);
 
         const tryQuality = q => new Promise(res => canvas.toBlob(res, "image/jpeg", q));
         (async () => {
-          let quality = 0.85;
-          let blob = await tryQuality(quality);
-          while (blob && blob.size > maxBytes && quality > 0.35) {
-            quality -= 0.15;
+          let blob = null;
+          // 화질을 낮춰도 목표 용량을 못 맞추면, 해상도를 80%씩 줄여서 다시 시도한다(최대 6번).
+          for (let round = 0; round < 6; round++) {
+            let quality = 0.85;
             blob = await tryQuality(quality);
+            while (blob && blob.size > maxBytes && quality > 0.35) {
+              quality -= 0.15;
+              blob = await tryQuality(quality);
+            }
+            if (!blob || blob.size <= maxBytes) break;
+            width = Math.round(width * 0.8);
+            height = Math.round(height * 0.8);
+            draw(width, height);
           }
           if (!blob) { reject(new Error("이미지 압축 실패")); return; }
           resolve(blob);
@@ -10199,38 +10252,63 @@ function BulkPhotoUploadModal({ onClose, extraSpec, centerLabel }) {
   const matchedItems = items.filter(it => it.id);
   const unmatchedItems = items.filter(it => !it.id);
 
+  // 사진 한 장 업로드 (필요하면 압축 후 전송). 결과를 { name, id, status, reason, file } 형태로 돌려준다.
+  // 실패한 항목은 file을 함께 들고 있어서, 나중에 "실패한 것만 다시 올리기"에 그대로 쓸 수 있다.
+  const uploadOne = async (file, id) => {
+    try {
+      let contentType = file.type || "image/jpeg";
+      let base64;
+      let compressed = false;
+      if (file.size > BULK_UPLOAD_MAX_BYTES) {
+        const blob = await compressImageFile(file, BULK_UPLOAD_MAX_BYTES);
+        base64 = await blobToBase64(blob);
+        contentType = "image/jpeg";
+        compressed = true;
+      } else {
+        base64 = await blobToBase64(file);
+      }
+      const res = await fetch("/.netlify/functions/upload-photo-cloudinary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: ADMIN_PASSWORD, id, fileName: file.name, contentType, fileBase64: base64 }),
+      });
+      const json = await readUploadResponse(res);
+      if (!json.ok) throw new Error(json.error || t("업로드 실패", "Upload failed"));
+      if (json.duplicate) {
+        return { name: file.name, id, status: "duplicate", reason: t("이미 등록된 사진", "Already uploaded") };
+      }
+      return { name: file.name, id, status: compressed ? "compressed" : "uploaded" };
+    } catch (e) {
+      return { name: file.name, id, status: "failed", reason: e.message, file };
+    }
+  };
+
   const startUpload = async () => {
     setPhase("uploading");
     const newResults = [];
     for (let i = 0; i < matchedItems.length; i++) {
       const { file, id } = matchedItems[i];
       setProgress({ current: i + 1, total: matchedItems.length, name: file.name });
-      try {
-        let contentType = file.type || "image/jpeg";
-        let base64;
-        let compressed = false;
-        if (file.size > BULK_UPLOAD_MAX_BYTES) {
-          const blob = await compressImageFile(file, BULK_UPLOAD_MAX_BYTES);
-          base64 = await blobToBase64(blob);
-          contentType = "image/jpeg";
-          compressed = true;
-        } else {
-          base64 = await blobToBase64(file);
-        }
-        const res = await fetch("/.netlify/functions/upload-photo-cloudinary", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey: ADMIN_PASSWORD, id, fileName: file.name, contentType, fileBase64: base64 }),
-        });
-        const json = await res.json();
-        if (!json.ok) throw new Error(json.error || t("업로드 실패", "Upload failed"));
-        newResults.push({ name: file.name, id, status: compressed ? "compressed" : "uploaded" });
-      } catch (e) {
-        newResults.push({ name: file.name, id, status: "failed", reason: e.message });
-      }
+      newResults.push(await uploadOne(file, id));
     }
     unmatchedItems.forEach(it => newResults.push({ name: it.file.name, id: null, status: "skipped", reason: t("파일명에서 관리번호를 찾지 못함", "Could not find management number in file name") }));
     setResults(newResults);
+    setPhase("done");
+  };
+
+  // 실패한 항목만 모아서 다시 올린다. 성공/건너뜀 결과는 그대로 두고, 실패 항목만 새 결과로 바꿔 끼운다.
+  // (이미 올라간 사진은 서버에서 중복으로 걸러주므로, 혹시 일부가 실제로는 올라가 있었어도 안전하다.)
+  const retryFailed = async () => {
+    const failedList = results.filter(r => r.status === "failed" && r.file);
+    if (failedList.length === 0) return;
+    setPhase("uploading");
+    const retried = new Map(); // 실패했던 항목(객체) → 재시도 결과
+    for (let i = 0; i < failedList.length; i++) {
+      const r = failedList[i];
+      setProgress({ current: i + 1, total: failedList.length, name: r.name });
+      retried.set(r, await uploadOne(r.file, r.id));
+    }
+    setResults(prev => prev.map(r => retried.get(r) || r));
     setPhase("done");
   };
 
@@ -10245,6 +10323,7 @@ function BulkPhotoUploadModal({ onClose, extraSpec, centerLabel }) {
   const compressedCount = results.filter(r => r.status === "compressed").length;
   const failedCount = results.filter(r => r.status === "failed").length;
   const skippedCount = results.filter(r => r.status === "skipped").length;
+  const duplicateCount = results.filter(r => r.status === "duplicate").length;
 
   return /*#__PURE__*/React.createElement(Modal, { onClose, maxWidth: 640 },
     React.createElement("div", { style: { padding: isMobile ? "18px 16px" : 28 } },
@@ -10256,7 +10335,7 @@ function BulkPhotoUploadModal({ onClose, extraSpec, centerLabel }) {
         }, "✕")
       ),
       React.createElement("div", { style: { fontSize: 12.5, color: "#7f8c8d", marginBottom: 18 } },
-        t(`파일명이 관리번호로 시작하는 사진들을 한꺼번에 선택하면, ${CENTER} 표본과 자동으로 매칭해서 업로드합니다. 10MB가 넘는 사진은 자동으로 압축됩니다.`, `Select multiple photos whose file names start with a management number, and they'll be automatically matched and uploaded to the corresponding ${CENTER} specimens. Photos over 10MB are compressed automatically.`)
+        t(`파일명이 관리번호로 시작하는 사진들을 한꺼번에 선택하면, ${CENTER} 표본과 자동으로 매칭해서 업로드합니다. 3.5MB가 넘는 사진은 자동으로 압축됩니다.`, `Select multiple photos whose file names start with a management number, and they'll be automatically matched and uploaded to the corresponding ${CENTER} specimens. Photos over 3.5MB are compressed automatically.`)
       ),
 
       phase === "select" && React.createElement(React.Fragment, null,
@@ -10321,14 +10400,18 @@ function BulkPhotoUploadModal({ onClose, extraSpec, centerLabel }) {
       phase === "done" && React.createElement(React.Fragment, null,
         React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#1a6b3e", marginBottom: 4 } }, t("✓ 완료되었습니다", "✓ Complete")),
         React.createElement("div", { style: { fontSize: 12.5, color: "#546e7a", marginBottom: 12 } },
-          t(`업로드 ${uploadedCount}건(그중 압축 ${compressedCount}건) · 매칭 안 돼 건너뜀 ${skippedCount}건 · 실패 ${failedCount}건`, `Uploaded ${uploadedCount} (${compressedCount} compressed) · Skipped (unmatched) ${skippedCount} · Failed ${failedCount}`)
+          t(`업로드 ${uploadedCount}건(그중 압축 ${compressedCount}건) · 이미 등록돼 건너뜀 ${duplicateCount}건 · 매칭 안 돼 건너뜀 ${skippedCount}건 · 실패 ${failedCount}건`, `Uploaded ${uploadedCount} (${compressedCount} compressed) · Skipped (already uploaded) ${duplicateCount} · Skipped (unmatched) ${skippedCount} · Failed ${failedCount}`)
         ),
         results.length > 0 && React.createElement("div", { style: { maxHeight: 260, overflowY: "auto", border: "1px solid #eef2f5", borderRadius: 8, padding: "8px 12px", marginBottom: 14 } },
           results.map((r, i) => React.createElement("div", {
             key: i,
-            style: { fontSize: 11.5, padding: "3px 0", color: r.status === "failed" ? "#c0392b" : r.status === "skipped" ? "#95a5a6" : "#1a6b3e" }
-          }, `${r.status === "uploaded" ? "✓" : r.status === "compressed" ? t("✓(압축)", "✓(compressed)") : r.status === "skipped" ? "–" : "✗"} ${r.name}${r.id ? ` → ${r.id}` : ""}${r.reason ? ` (${r.reason})` : ""}`))
+            style: { fontSize: 11.5, padding: "3px 0", color: r.status === "failed" ? "#c0392b" : (r.status === "skipped" || r.status === "duplicate") ? "#95a5a6" : "#1a6b3e" }
+          }, `${r.status === "uploaded" ? "✓" : r.status === "compressed" ? t("✓(압축)", "✓(compressed)") : (r.status === "skipped" || r.status === "duplicate") ? "–" : "✗"} ${r.name}${r.id ? ` → ${r.id}` : ""}${r.reason ? ` (${r.reason})` : ""}`))
         ),
+        failedCount > 0 && React.createElement("button", {
+          onClick: retryFailed,
+          style: { width: "100%", marginBottom: 8, padding: "10px 18px", borderRadius: 8, border: "1px solid #c0392b", background: "#fdeeec", color: "#c0392b", cursor: "pointer", fontSize: 13, fontWeight: 700 }
+        }, t(`🔄 실패한 ${failedCount}건만 다시 올리기`, `🔄 Retry ${failedCount} Failed`)),
         React.createElement("div", { style: { display: "flex", gap: 8 } },
           React.createElement("button", {
             onClick: reset,
